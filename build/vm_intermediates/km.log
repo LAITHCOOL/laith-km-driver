@@ -1,6 +1,0 @@
-﻿  Building 'km' with toolset 'WindowsKernelModeDriver10.0' and the 'Universal' target platform.
-  Stamping C:\Users\laith\Desktop\my project\OG\laithdriver\build\vm_intermediates\km.inf
-  Stamping [Version] section with DriverVer=06/25/2025,1.22.30.218
-  main.cpp
-  km.vcxproj -> C:\Users\laith\Desktop\my project\OG\laithdriver\build\km.sys
-  Driver is 'Universal'.
