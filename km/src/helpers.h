@@ -1,6 +1,6 @@
 #pragma once
 #include <ntifs.h>
-
+typedef unsigned char BYTE;
 #define SystemModuleInformation 11
 #define POOL_TAG 'oamL'
 #define ImageFileName 0x5A8 // EPROCESS::ImageFileName
@@ -74,6 +74,20 @@ typedef struct _MODULE_PACK_KM {
     SIZE_T size;
     WCHAR moduleName[1024];
 } MODULE_PACK_KM, * PMODULE_PACK_KM;
+
+// Batch read structures
+typedef struct _BatchReadRequest {
+    DWORD64 address;
+    SIZE_T size;
+    SIZE_T offset_in_buffer; // Offset where this read's data starts in the output buffer
+} BatchReadRequest, * PBatchReadRequest;
+
+typedef struct _BatchReadHeader {
+    HANDLE process_id;
+    UINT32 num_requests;
+    SIZE_T total_buffer_size;
+    // Followed by BatchReadRequest array, then output buffer space
+} BatchReadHeader, * PBatchReadHeader;
 
 
 typedef struct _SYSTEM_MODULE {

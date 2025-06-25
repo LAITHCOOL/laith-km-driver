@@ -15,6 +15,9 @@ namespace driver {
 
         constexpr ULONG get_pid =
             CTL_CODE(FILE_DEVICE_UNKNOWN, 0x803, METHOD_BUFFERED, FILE_SPECIAL_ACCESS);
+
+        constexpr ULONG batch_read =
+            CTL_CODE(FILE_DEVICE_UNKNOWN, 0x804, METHOD_BUFFERED, FILE_SPECIAL_ACCESS);
     }
 
     NTSTATUS create(PDEVICE_OBJECT device_object, PIRP irp) {
@@ -158,6 +161,115 @@ namespace driver {
                 status = STATUS_INVALID_PARAMETER;
                 irp->IoStatus.Information = 0;
             }
+        }
+        break;
+
+        case codes::batch_read:
+        {
+            PBatchReadHeader header = (PBatchReadHeader)irp->AssociatedIrp.SystemBuffer;
+
+            // Validate input parameters
+            if (!header || header->num_requests == 0 || header->num_requests > 0x100000) {
+                status = STATUS_INVALID_PARAMETER;
+                irp->IoStatus.Information = 0;
+                break;
+            }
+
+            // Validate buffer size
+            SIZE_T expected_min_size = sizeof(BatchReadHeader) +
+                (header->num_requests * sizeof(BatchReadRequest));
+
+            if (stack_irp->Parameters.DeviceIoControl.InputBufferLength < expected_min_size) {
+                status = STATUS_BUFFER_TOO_SMALL;
+                irp->IoStatus.Information = 0;
+                break;
+            }
+
+            // Get target process
+            PEPROCESS target_process = nullptr;
+            status = PsLookupProcessByProcessId(header->process_id, &target_process);
+
+            if (!NT_SUCCESS(status)) {
+                irp->IoStatus.Information = 0;
+                break;
+            }
+
+            // Get pointer to request array (right after header)
+            PBatchReadRequest requests = (PBatchReadRequest)(header + 1);
+
+            // Get pointer to output buffer (after request array)
+            BYTE* output_buffer = (BYTE*)requests + (header->num_requests * sizeof(BatchReadRequest));
+
+            UINT32 successful_reads = 0;
+
+            __try {
+                // Process each read request
+                for (UINT32 i = 0; i < header->num_requests; ++i) {
+                    PBatchReadRequest req = &requests[i];
+
+                    // Validate individual request parameters
+                    if (!req->address ||
+                        req->size == 0 ||
+                        req->size > 0x2000 ||  // Increased limit for batch operations
+                        (ULONG_PTR)req->address >= 0x7FFFFFFFFFFF ||
+                        (ULONG_PTR)req->address < 0x10000) {
+
+                        // Zero out the output buffer for invalid requests
+                        if (req->offset_in_buffer + req->size <= header->total_buffer_size) {
+                            RtlZeroMemory(output_buffer + req->offset_in_buffer, req->size);
+                        }
+                        continue;
+                    }
+
+                    // Check for integer overflow in address calculation
+                    if ((ULONG_PTR)req->address + req->size < (ULONG_PTR)req->address) {
+                        if (req->offset_in_buffer + req->size <= header->total_buffer_size) {
+                            RtlZeroMemory(output_buffer + req->offset_in_buffer, req->size);
+                        }
+                        continue;
+                    }
+
+                    // Validate output buffer bounds
+                    if (req->offset_in_buffer + req->size > header->total_buffer_size) {
+                        continue;
+                    }
+
+                    // Perform the memory read
+                    SIZE_T bytes_read = 0;
+                    NTSTATUS read_status = MmCopyVirtualMemory(
+                        target_process,
+                        (PVOID)req->address,
+                        PsGetCurrentProcess(),
+                        output_buffer + req->offset_in_buffer,
+                        req->size,
+                        KernelMode,
+                        &bytes_read
+                    );
+
+                    if (NT_SUCCESS(read_status) && bytes_read == req->size) {
+                        successful_reads++;
+                    }
+                    else {
+                        // Zero out failed reads to provide consistent behavior
+                        RtlZeroMemory(output_buffer + req->offset_in_buffer, req->size);
+                    }
+                }
+
+                // Set success if at least some reads succeeded
+                status = (successful_reads > 0) ? STATUS_SUCCESS : STATUS_UNSUCCESSFUL;
+
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER) {
+                debug_print("Exception in batch read operation\n");
+                status = STATUS_ACCESS_VIOLATION;
+            }
+
+            // Clean up process reference
+            ObDereferenceObject(target_process);
+
+            // Set the number of bytes to return (entire buffer)
+            irp->IoStatus.Information = NT_SUCCESS(status) ?
+                stack_irp->Parameters.DeviceIoControl.InputBufferLength : 0;
         }
         break;
 
