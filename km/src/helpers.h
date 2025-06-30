@@ -1,5 +1,6 @@
 #pragma once
 #include <ntifs.h>
+#include <ntintsafe.h>
 typedef unsigned char BYTE;
 #define SystemModuleInformation 11
 #define POOL_TAG 'oamL'
@@ -7,6 +8,11 @@ typedef unsigned char BYTE;
 #define ActiveThreads 0x5F0 // EPROCESS::ActiveThreads
 #define ThreadListHead 0x5E0 // EPROCESS::ThreadListHead
 #define ActiveProcessLinks 0x448 // EPROCESS::ActiveProcessLinks
+
+
+
+static PEPROCESS cached_process = nullptr;
+static HANDLE cached_pid = nullptr;
 
 extern "C" {
     NTKERNELAPI NTSTATUS IoCreateDriver(PUNICODE_STRING DriverName,
@@ -426,3 +432,216 @@ HANDLE GetPID(const wchar_t* process_name)
     return NULL;
 }
 
+
+NTSTATUS handle_attach(PIRP irp, SIZE_T* information) {
+    Request* request = (Request*)irp->AssociatedIrp.SystemBuffer;
+    PEPROCESS temp_process = nullptr;
+    NTSTATUS status = PsLookupProcessByProcessId(request->process_id, &temp_process);
+
+    if (NT_SUCCESS(status)) {
+        // Clear old cache if different PID
+        if (cached_process && cached_pid != request->process_id) {
+            ObDereferenceObject(cached_process);
+            cached_process = nullptr;
+        }
+
+        // Cache the new process
+        cached_process = temp_process;
+        cached_pid = request->process_id;
+    }
+
+    *information = (NT_SUCCESS(status)) ? sizeof(Request) : 0;
+    return status;
+}
+
+NTSTATUS handle_get_pid(PIRP irp, SIZE_T* information) {
+    P_PID_PACK pidPack = (P_PID_PACK)irp->AssociatedIrp.SystemBuffer;
+
+    if (pidPack && pidPack->name[0] != 0) {
+        HANDLE processId = GetPID(pidPack->name);
+        pidPack->pid = HandleToULong(processId);
+
+        NTSTATUS status = (processId != NULL) ? STATUS_SUCCESS : STATUS_NOT_FOUND;
+        *information = sizeof(PID_PACK);
+        return status;
+    }
+    else {
+        *information = 0;
+        return STATUS_INVALID_PARAMETER;
+    }
+}
+
+NTSTATUS handle_get_module(PIRP irp, SIZE_T* information) {
+    PMODULE_PACK_KM modulePack = (PMODULE_PACK_KM)irp->AssociatedIrp.SystemBuffer;
+
+    if (modulePack && modulePack->moduleName[0] != 0 && modulePack->pid != 0) {
+        // Convert wide char to ANSI
+        char ansiModuleName[1024] = { 0 };
+        NTSTATUS status = WideCharToAnsi(modulePack->moduleName, ansiModuleName, sizeof(ansiModuleName));
+
+        if (NT_SUCCESS(status)) {
+            HANDLE processId = ULongToHandle(modulePack->pid);
+
+            // Get process module base address
+            PVOID baseAddr = GetProcessModuleBase(processId, ansiModuleName);
+
+            modulePack->baseAddress = (UINT64)baseAddr;
+            status = (baseAddr != nullptr) ? STATUS_SUCCESS : STATUS_NOT_FOUND;
+            *information = sizeof(MODULE_PACK_KM);
+            return status;
+        }
+        else {
+            *information = 0;
+            return status;
+        }
+    }
+    else {
+        *information = 0;
+        return STATUS_INVALID_PARAMETER;
+    }
+}
+
+NTSTATUS handle_read(PIRP irp, SIZE_T* information) {
+    Request* request = (Request*)irp->AssociatedIrp.SystemBuffer;
+    PEPROCESS target_process;
+    NTSTATUS status;
+
+    // Fast path: use cached process (likely case)
+    if (cached_process && cached_pid == request->process_id) {
+        target_process = cached_process;
+        ObReferenceObject(target_process);
+    }
+    else {
+        // Slow path: lookup and cache
+        status = PsLookupProcessByProcessId(request->process_id, &target_process);
+        if (!NT_SUCCESS(status)) {
+            *information = 0;
+            return status;
+        }
+
+        // Update cache atomically
+        if (cached_process) {
+            ObDereferenceObject(cached_process);
+        }
+        cached_process = target_process;
+        cached_pid = request->process_id;
+        ObReferenceObject(target_process);
+    }
+
+    // Single validation block with early exit on most restrictive checks first
+    ULONG_PTR target_addr = (ULONG_PTR)request->target;
+    if (request->size > 0x1000 ||                              // Most likely to fail
+        request->size == 0 ||
+        !request->buffer ||
+        target_addr < 0x10000 ||                               // Quick range checks
+        target_addr >= 0x7FFFFFFFFFFF ||
+        (target_addr + request->size) <= target_addr) {        // Overflow check last
+
+        ObDereferenceObject(target_process);
+        *information = 0;
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    // Direct memory copy with minimal overhead
+    SIZE_T return_size;
+    status = MmCopyVirtualMemory(target_process, request->target,
+        PsGetCurrentProcess(), request->buffer,
+        request->size, KernelMode, &return_size);
+
+    ObDereferenceObject(target_process);
+    *information = NT_SUCCESS(status) ? sizeof(Request) : 0;
+    return status;
+}
+
+NTSTATUS handle_batch_read(PIRP irp, PIO_STACK_LOCATION stack_irp, SIZE_T* information) {
+    PBatchReadHeader header = (PBatchReadHeader)irp->AssociatedIrp.SystemBuffer;
+
+    // Fast validation with most restrictive first
+    UINT32 num_requests = header->num_requests;
+    if (num_requests > 0x100000 || num_requests == 0) {        // Most likely failures first
+        *information = 0;
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    // Size validation (compiler will optimize this multiply)
+    SIZE_T expected_size = sizeof(BatchReadHeader) + (num_requests * sizeof(BatchReadRequest));
+    if (stack_irp->Parameters.DeviceIoControl.InputBufferLength < expected_size) {
+        *information = 0;
+        return STATUS_BUFFER_TOO_SMALL;
+    }
+
+    // Process lookup (same fast path as single read)
+    PEPROCESS target_process;
+    NTSTATUS status;
+    if (cached_process && cached_pid == header->process_id) {
+        target_process = cached_process;
+        ObReferenceObject(target_process);
+    }
+    else {
+        status = PsLookupProcessByProcessId(header->process_id, &target_process);
+        if (!NT_SUCCESS(status)) {
+            *information = 0;
+            return status;
+        }
+
+        if (cached_process) {
+            ObDereferenceObject(cached_process);
+        }
+        cached_process = target_process;
+        cached_pid = header->process_id;
+        ObReferenceObject(target_process);
+    }
+
+    // Pre-calculate pointers once
+    PBatchReadRequest requests = (PBatchReadRequest)(header + 1);
+    BYTE* output_buffer = (BYTE*)requests + (num_requests * sizeof(BatchReadRequest));
+    SIZE_T total_buffer_size = header->total_buffer_size;
+
+    UINT32 successful_reads = 0;
+
+    // Main processing loop - optimized for common case (valid requests)
+    for (UINT32 i = 0; i < num_requests; ++i) {
+        PBatchReadRequest req = &requests[i];
+
+        // Fast validation path - order by likelihood of failure
+        ULONG_PTR addr = (ULONG_PTR)req->address;
+        SIZE_T size = req->size;
+        SIZE_T offset = req->offset_in_buffer;
+
+        if (size > 0x10000 ||                                  // Size check first (most restrictive)
+            size == 0 ||
+            addr < 0x10000 ||                                  // Address range checks
+            addr >= 0x7FFFFFFFFFFF ||
+            (addr + size) <= addr ||                           // Overflow
+            (offset + size) > total_buffer_size) {             // Buffer bounds
+
+            // Zero invalid reads (only if bounds allow)
+            if ((offset + size) <= total_buffer_size) {
+                RtlZeroMemory(output_buffer + offset, size);
+            }
+            continue;
+        }
+
+        // Optimized memory copy - no intermediate variables
+        SIZE_T bytes_read;
+        if (NT_SUCCESS(MmCopyVirtualMemory(target_process, (PVOID)addr,
+            PsGetCurrentProcess(), output_buffer + offset,
+            size, KernelMode, &bytes_read))) {
+
+            ++successful_reads;
+        }
+        else {
+            // Zero failed reads
+            RtlZeroMemory(output_buffer + offset, size);
+        }
+    }
+
+    ObDereferenceObject(target_process);
+
+    // Simple success determination
+    status = successful_reads ? STATUS_SUCCESS : STATUS_UNSUCCESSFUL;
+    *information = NT_SUCCESS(status) ?
+        stack_irp->Parameters.DeviceIoControl.InputBufferLength : 0;
+
+    return status;
+}

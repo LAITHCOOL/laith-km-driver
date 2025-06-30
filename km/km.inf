@@ -4,11 +4,11 @@
 
 [Version]
 Signature="$WINDOWS NT$"
-Class=System ; TODO: specify appropriate Class
-ClassGuid={4d36e97d-e325-11ce-bfc1-08002be10318} ; TODO: specify appropriate ClassGuid
+Class=System
+ClassGuid={4d36e97d-e325-11ce-bfc1-08002be10318}
 Provider=%ManufacturerName%
 CatalogFile=km.cat
-DriverVer= ; TODO: set DriverVer in stampinf property pages
+DriverVer=06/30/2025,1.0.0.0
 PnpLockdown=1
 
 [DestinationDirs]
@@ -20,17 +20,20 @@ km_Device_CoInstaller_CopyFiles = 11
 
 [SourceDisksFiles]
 km.sys  = 1,,
-WdfCoInstaller$KMDFCOINSTALLERVERSION$.dll=1 ; make sure the number matches with SourceDisksNames
+WdfCoInstaller01033.dll=1
 
 ;*****************************************
 ; Install Section
 ;*****************************************
 
 [Manufacturer]
-%ManufacturerName%=Standard,NT$ARCH$
+%ManufacturerName%=Standard,NTx86,NTamd64
 
-[Standard.NT$ARCH$]
-%km.DeviceDesc%=km_Device, Root\km ; TODO: edit hw-id
+[Standard.NTx86]
+%km.DeviceDesc%=km_Device, Root\kmDevice
+
+[Standard.NTamd64]
+%km.DeviceDesc%=km_Device, Root\kmDevice
 
 [km_Device.NT]
 CopyFiles=Drivers_Dir
@@ -59,19 +62,20 @@ AddReg=km_Device_CoInstaller_AddReg
 CopyFiles=km_Device_CoInstaller_CopyFiles
 
 [km_Device_CoInstaller_AddReg]
-HKR,,CoInstallers32,0x00010000, "WdfCoInstaller$KMDFCOINSTALLERVERSION$.dll,WdfCoInstaller"
+HKR,,CoInstallers32,0x00010000, "WdfCoInstaller01033.dll,WdfCoInstaller"
 
 [km_Device_CoInstaller_CopyFiles]
-WdfCoInstaller$KMDFCOINSTALLERVERSION$.dll
+WdfCoInstaller01033.dll
 
 [km_Device.NT.Wdf]
 KmdfService =  km, km_wdfsect
+
 [km_wdfsect]
-KmdfLibraryVersion = $KMDFVERSION$
+KmdfLibraryVersion = 1.33
 
 [Strings]
 SPSVCINST_ASSOCSERVICE= 0x00000002
-ManufacturerName="<Your manufacturer name>" ;TODO: Replace with your manufacturer name
+ManufacturerName="laith"
 DiskName = "km Installation Disk"
-km.DeviceDesc = "km Device"
-km.SVCDESC = "km Service"
+km.DeviceDesc = "km Virtual Device"
+km.SVCDESC = "km Kernel Service"

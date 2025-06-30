@@ -106,7 +106,7 @@
     </Inf>
     <Inf>
       <SpecifyDriverVerDirectiveDate>false</SpecifyDriverVerDirectiveDate>
-      <SpecifyArchitecture>false</SpecifyArchitecture>
+      <SpecifyArchitecture>true</SpecifyArchitecture>
     </Inf>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -121,7 +121,7 @@
       <EntryPointSymbol>DriverEntry</EntryPointSymbol>
     </Link>
     <Inf>
-      <SpecifyArchitecture>false</SpecifyArchitecture>
+      <SpecifyArchitecture>true</SpecifyArchitecture>
     </Inf>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|ARM64'">

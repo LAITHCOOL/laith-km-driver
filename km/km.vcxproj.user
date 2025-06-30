@@ -4,9 +4,9 @@
     <ShowAllFiles>true</ShowAllFiles>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
-    <SignMode>Off</SignMode>
+    <SignMode>TestSign</SignMode>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-    <SignMode>Off</SignMode>
+    <SignMode>TestSign</SignMode>
   </PropertyGroup>
 </Project>
